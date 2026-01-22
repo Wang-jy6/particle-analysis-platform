@@ -25,31 +25,66 @@ ELEMENT_ENERGIES = {
 def load_uploaded_data(uploaded_files):
     data_map = {}
     spectrum = {'x': [], 'y': [], 'meta': {}}
+    
+    # --- 第一步：读取原始数据 ---
     for f in uploaded_files:
         fname = f.name
+        # CSV 处理
         if fname.endswith(".csv"):
             el = fname.split(" ")[0].split(".")[0].split("_")[-1]
             if "电子图像" in fname: el = "SE"
-            df = pd.read_csv(f, header=None)
-            data_map[el] = df.apply(pd.to_numeric, errors='coerce').fillna(0).values
+            try:
+                df = pd.read_csv(f, header=None)
+                # 转换为 numpy 数组
+                mat = df.apply(pd.to_numeric, errors='coerce').fillna(0).values
+                data_map[el] = mat
+            except: pass
+            
+        # Excel 处理
         elif fname.endswith((".xls", ".xlsx")):
-            xls = pd.ExcelFile(f)
-            for sheet in xls.sheet_names:
-                df = pd.read_excel(xls, sheet_name=sheet, header=None)
-                data_map[sheet] = df.apply(pd.to_numeric, errors='coerce').fillna(0).values
+            try:
+                xls = pd.ExcelFile(f)
+                for sheet in xls.sheet_names:
+                    df = pd.read_excel(xls, sheet_name=sheet, header=None)
+                    mat = df.apply(pd.to_numeric, errors='coerce').fillna(0).values
+                    data_map[sheet] = mat
+            except: pass
+            
+        # 能谱 TXT 处理
         elif fname.endswith(".txt"):
-            stringio = io.StringIO(f.getvalue().decode("utf-8", errors='ignore'))
-            lines = stringio.readlines()
-            is_data = False
-            for line in lines:
-                if "SPECTRUM" in line: is_data = True; continue
-                if is_data and "," in line:
-                    try:
+            try:
+                stringio = io.StringIO(f.getvalue().decode("utf-8", errors='ignore'))
+                lines = stringio.readlines()
+                is_data = False
+                for line in lines:
+                    if "SPECTRUM" in line: is_data = True; continue
+                    if is_data and "," in line:
                         x, y = map(float, line.strip().split(","))
                         spectrum['x'].append(x); spectrum['y'].append(y)
-                    except: pass
-    return data_map, spectrum
+            except: pass
 
+    # --- 第二步：【关键修复】强制对齐尺寸 ---
+    if data_map:
+        # 1. 找到最大的宽和高 (通常以 SE 图或最大 Mapping 为准)
+        max_h, max_w = 0, 0
+        for mat in data_map.values():
+            h, w = mat.shape
+            if h * w > max_h * max_w:
+                max_h, max_w = h, w
+        
+        # 2. 将所有矩阵 Resize 到最大尺寸
+        aligned_map = {}
+        for k, v in data_map.items():
+            # cv2.resize 接收 (width, height)，而 shape 是 (height, width)
+            if v.shape != (max_h, max_w):
+                # 使用线性插值放大，保持平滑
+                aligned_map[k] = cv2.resize(v, (max_w, max_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                aligned_map[k] = v
+        
+        return aligned_map, spectrum
+
+    return data_map, spectrum
 def auto_identify_peaks(x, y):
     x, y = np.array(x), np.array(y)
     if len(y) == 0: return []
