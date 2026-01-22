@@ -6,3 +6,5 @@ plotly
 opencv-python-headless
 openpyxl
 xlrd
+torch         
+torchvision   
