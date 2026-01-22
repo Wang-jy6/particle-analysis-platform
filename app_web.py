@@ -1,16 +1,16 @@
 import streamlit as st
 
-# ================= 0. 兼容性补丁 (关键修复) =================
+# ================= 0. 兼容性补丁 (请务必保留) =================
 # 自动修复 streamlit-drawable-canvas 在新版 Streamlit 下的 AttributeError
 import streamlit.elements.image as st_image
 try:
     # 尝试从新路径导入 image_to_url
     from streamlit.elements.lib.image_utils import image_to_url
-    # 如果旧路径不存在该函数，则手动挂载
+    # 如果旧路径不存在该函数，则手动挂载上去
     if not hasattr(st_image, 'image_to_url'):
         st_image.image_to_url = image_to_url
 except ImportError:
-    pass # 如果导入失败，说明版本差异过大，暂时忽略
+    pass # 如果导入失败，说明版本差异过大，但通常这能解决问题
 # ==========================================================
 
 import pandas as pd
@@ -214,7 +214,7 @@ if uploaded_files:
             with col_canvas:
                 cw, ch = int(w * zoom_level), int(h * zoom_level)
                 
-                # 【回归 PIL Image】使用 PIL 图片，配合顶部的兼容性补丁
+                # 使用 PIL Image (因头部已加补丁，这里使用 PIL 不会报错)
                 bg_pil = Image.fromarray(bg_uint8).resize((cw, ch))
                 
                 st.caption(f"合成预览 ({', '.join(legend)})")
@@ -222,7 +222,7 @@ if uploaded_files:
                     fill_color="rgba(255, 165, 0, 0.2)",
                     stroke_width=2,
                     stroke_color="#fff",
-                    background_image=bg_pil, # 使用 PIL 图片对象
+                    background_image=bg_pil, # 使用 PIL 对象
                     update_streamlit=True,
                     height=ch,
                     width=cw,
