@@ -1,4 +1,34 @@
 import streamlit as st
+
+# ================= 🔴 暴力兼容性补丁 (勿动) =================
+# 这个补丁专门解决 AttributeError: module 'streamlit.elements.image' has no attribute 'image_to_url'
+# 它的作用是：不管版本怎么变，强行把缺失的函数塞回去。
+import streamlit.elements.image as st_image
+
+# 定义一个万能的替补函数
+def custom_image_to_url(image, width, clamp, channels, output_format, image_id, allow_emoji=False):
+    # 方案 A: 尝试调用新版 Streamlit 的内部函数
+    try:
+        from streamlit.elements.lib.image_utils import image_to_url
+        return image_to_url(image, width, clamp, channels, output_format, image_id, allow_emoji)
+    except ImportError:
+        pass
+        
+    # 方案 B: 如果 A 失败，尝试另一个路径 (针对 Streamlit 1.18+)
+    try:
+        from streamlit.runtime.media_file_storage import image_to_url
+        return image_to_url(image, width, clamp, channels, output_format, image_id, allow_emoji)
+    except ImportError:
+        pass
+
+    # 方案 C: 如果都失败，返回空字符串，确保程序不崩（虽然背景图可能不显示，但绝不报错）
+    return ""
+
+# 强行挂载函数
+if not hasattr(st_image, 'image_to_url'):
+    st_image.image_to_url = custom_image_to_url
+# ==========================================================
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -195,24 +225,30 @@ if uploaded_files:
                 cw, ch = int(w * zoom_level), int(h * zoom_level)
                 
                 # 【回归正统】使用 PIL Image
-                # 注意：必须 convert('RGB')，否则部分 PNG 格式可能触发问题
+                # 必须 convert('RGB') 确保格式正确
                 bg_pil = Image.fromarray(bg_uint8).convert("RGB").resize((cw, ch))
                 
                 st.caption(f"合成预览 ({', '.join(legend)})")
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 165, 0, 0.2)",
-                    stroke_width=2,
-                    stroke_color="#fff",
-                    background_image=bg_pil, 
-                    update_streamlit=True,
-                    height=ch,
-                    width=cw,
-                    drawing_mode=draw_mode,
-                    key=f"cv_{selected_pid}_{zoom_level}",
-                )
+                
+                # 在调用 st_canvas 前加一层保险
+                try:
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255, 165, 0, 0.2)",
+                        stroke_width=2,
+                        stroke_color="#fff",
+                        background_image=bg_pil, # 传 PIL 对象
+                        update_streamlit=True,
+                        height=ch,
+                        width=cw,
+                        drawing_mode=draw_mode,
+                        key=f"cv_{selected_pid}_{zoom_level}",
+                    )
+                except Exception as e:
+                    st.error(f"画布加载失败，请截图报错信息: {e}")
+                    canvas_result = None
 
             with col_result:
-                if canvas_result.json_data and canvas_result.json_data["objects"]:
+                if canvas_result and canvas_result.json_data and canvas_result.json_data["objects"]:
                     st.subheader("📊 选区分析")
                     obj = canvas_result.json_data["objects"][-1]
                     mask = np.zeros((h, w), dtype=np.uint8)
@@ -241,7 +277,8 @@ if uploaded_files:
                     dia = np.sqrt(4 * np.sum(mask) / np.pi) * 0.05
                     st.metric("等效直径", f"{dia:.2f} μm")
                 else:
-                    st.info("👈 请在左图画圈分析")
+                    if canvas_result is not None:
+                        st.info("👈 请在左图画圈分析")
 
             st.markdown("---")
             if current_spec['x']:
