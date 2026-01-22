@@ -8,7 +8,6 @@ import io
 import os
 import zipfile
 import shutil
-import base64
 from PIL import Image
 from scipy.signal import find_peaks
 
@@ -23,28 +22,7 @@ ELEMENT_ENERGIES = {
     'Cu': 8.040, 'Zn': 8.630, 'Au': 2.120, 'Ag': 2.980
 }
 
-# ================= 2. 核心工具函数 =================
-
-def get_image_base64(img_array):
-    """
-    【终极修复】将 Numpy 图像转为 Base64 字符串。
-    绕过所有 Streamlit/Canvas 的内部图片对象检查。
-    """
-    # 确保是 uint8 类型
-    if img_array.dtype != np.uint8:
-        img_array = (np.clip(img_array, 0, 1) * 255).astype(np.uint8)
-    
-    # 转为 PIL Image
-    img = Image.fromarray(img_array)
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
-    
-    # 保存到内存缓冲
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    
-    #以此返回 Base64 字符串
-    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
+# ================= 2. 核心处理逻辑 =================
 
 def align_images(data_map):
     """强制对齐所有图像尺寸"""
@@ -216,19 +194,16 @@ if uploaded_files:
             with col_canvas:
                 cw, ch = int(w * zoom_level), int(h * zoom_level)
                 
-                # Resize (这里需要使用 cv2, 因为 numpy array 直接resize比较方便)
-                bg_resized = cv2.resize(bg_uint8, (cw, ch), interpolation=cv2.INTER_LINEAR)
-                
-                # 【关键修复】直接传 Base64 字符串，彻底绕过 Streamlit 的图片对象检查
-                bg_b64 = get_image_base64(bg_resized)
+                # 【回归正统】使用 PIL Image
+                # 注意：必须 convert('RGB')，否则部分 PNG 格式可能触发问题
+                bg_pil = Image.fromarray(bg_uint8).convert("RGB").resize((cw, ch))
                 
                 st.caption(f"合成预览 ({', '.join(legend)})")
-                
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 165, 0, 0.2)",
                     stroke_width=2,
                     stroke_color="#fff",
-                    background_image=bg_b64, # 传字符串！绝对不会报 'int' error
+                    background_image=bg_pil, 
                     update_streamlit=True,
                     height=ch,
                     width=cw,
