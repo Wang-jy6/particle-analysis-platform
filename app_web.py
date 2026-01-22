@@ -1,4 +1,18 @@
 import streamlit as st
+
+# ================= 0. 兼容性补丁 (关键修复) =================
+# 自动修复 streamlit-drawable-canvas 在新版 Streamlit 下的 AttributeError
+import streamlit.elements.image as st_image
+try:
+    # 尝试从新路径导入 image_to_url
+    from streamlit.elements.lib.image_utils import image_to_url
+    # 如果旧路径不存在该函数，则手动挂载
+    if not hasattr(st_image, 'image_to_url'):
+        st_image.image_to_url = image_to_url
+except ImportError:
+    pass # 如果导入失败，说明版本差异过大，暂时忽略
+# ==========================================================
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -14,7 +28,7 @@ from scipy.signal import find_peaks
 # ================= 1. 全局配置 =================
 st.set_page_config(page_title="微粒全能分析平台", layout="wide", page_icon="🔬")
 
-# 元素特征能量表 (keV)
+# 元素特征能量表
 ELEMENT_ENERGIES = {
     'C': 0.277, 'N': 0.392, 'O': 0.525, 'F': 0.677, 'Na': 1.041, 'Mg': 1.253, 
     'Al': 1.486, 'Si': 1.739, 'P': 2.013, 'S': 2.307, 'Cl': 2.621, 'K': 3.312, 
@@ -25,19 +39,14 @@ ELEMENT_ENERGIES = {
 # ================= 2. 核心处理逻辑 =================
 
 def align_images(data_map):
-    """
-    【修复 ValueError】强制对齐所有图像尺寸
-    """
+    """强制对齐所有图像尺寸"""
     if not data_map: return data_map
-    
-    # 1. 寻找最大尺寸
     max_h, max_w = 0, 0
     for mat in data_map.values():
         h, w = mat.shape
         if h * w > max_h * max_w:
             max_h, max_w = h, w
     
-    # 2. 统一缩放到最大尺寸
     aligned = {}
     for k, v in data_map.items():
         if v.shape != (max_h, max_w):
@@ -57,7 +66,7 @@ def parse_element_name(filename):
     return parts[0]
 
 def read_file_content(file_obj, filename):
-    """统一读取器 (CSV/Excel/TXT)"""
+    """统一读取器"""
     res_type = None
     content = None
     fname_lower = filename.lower()
@@ -107,7 +116,6 @@ def auto_identify_peaks(x, y):
         if best_el: results.append({'x': energy, 'y': y[p], 'text': best_el})
     return results
 
-# --- 解析逻辑 ---
 def parse_single_mode(uploaded_files):
     data_map = {}
     spec = {'x': [], 'y': []}
@@ -154,6 +162,7 @@ with st.sidebar:
     st.header("📂 数据导入")
     st.info("支持：\n1. 拖入多个CSV/TXT (单微粒)\n2. 拖入ZIP包 (批量)")
     uploaded_files = st.file_uploader("上传文件", accept_multiple_files=True)
+    
     st.markdown("---")
     st.header("🎨 交互设置")
     zoom_level = st.slider("画布缩放", 0.5, 4.0, 1.5, 0.1)
@@ -204,18 +213,16 @@ if uploaded_files:
             
             with col_canvas:
                 cw, ch = int(w * zoom_level), int(h * zoom_level)
-                bg_pil = Image.fromarray(bg_uint8).resize((cw, ch))
                 
-                # 【关键修复】将 PIL 图片转回 Numpy 数组 (RGB) 传给 st_canvas
-                # 这样可以绕过 Streamlit 新版本 'image_to_url' 的 AttributeError
-                bg_array = np.array(bg_pil.convert("RGB"))
+                # 【回归 PIL Image】使用 PIL 图片，配合顶部的兼容性补丁
+                bg_pil = Image.fromarray(bg_uint8).resize((cw, ch))
                 
                 st.caption(f"合成预览 ({', '.join(legend)})")
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 165, 0, 0.2)",
                     stroke_width=2,
                     stroke_color="#fff",
-                    background_image=bg_array, # <--- 修复点：传 Numpy 数组
+                    background_image=bg_pil, # 使用 PIL 图片对象
                     update_streamlit=True,
                     height=ch,
                     width=cw,
