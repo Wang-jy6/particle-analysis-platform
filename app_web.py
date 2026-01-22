@@ -1,17 +1,21 @@
 import streamlit as st
 
-# ================= 0. 兼容性补丁 (请务必保留) =================
-# 自动修复 streamlit-drawable-canvas 在新版 Streamlit 下的 AttributeError
+# ================= 0. 强力兼容性补丁 (必须放在最前面) =================
+# 修复 'int' object has no attribute 'width' 和 'image_to_url' missing 报错
 import streamlit.elements.image as st_image
 try:
-    # 尝试从新路径导入 image_to_url
+    # 尝试从新版 Streamlit 路径导入
     from streamlit.elements.lib.image_utils import image_to_url
-    # 如果旧路径不存在该函数，则手动挂载上去
+    # 如果 st_image 模块里没有这个函数，就手动挂载上去
     if not hasattr(st_image, 'image_to_url'):
         st_image.image_to_url = image_to_url
 except ImportError:
-    pass # 如果导入失败，说明版本差异过大，但通常这能解决问题
-# ==========================================================
+    # 如果路径变了，手动定义一个 dummy 函数防止报错 (虽然图片可能不显示，但不崩)
+    def image_to_url(image, width, clamp, channels, output_format, image_id, allow_emoji=False):
+        return "", "" 
+    if not hasattr(st_image, 'image_to_url'):
+        st_image.image_to_url = image_to_url
+# ===================================================================
 
 import pandas as pd
 import numpy as np
@@ -28,7 +32,6 @@ from scipy.signal import find_peaks
 # ================= 1. 全局配置 =================
 st.set_page_config(page_title="微粒全能分析平台", layout="wide", page_icon="🔬")
 
-# 元素特征能量表
 ELEMENT_ENERGIES = {
     'C': 0.277, 'N': 0.392, 'O': 0.525, 'F': 0.677, 'Na': 1.041, 'Mg': 1.253, 
     'Al': 1.486, 'Si': 1.739, 'P': 2.013, 'S': 2.307, 'Cl': 2.621, 'K': 3.312, 
@@ -56,7 +59,6 @@ def align_images(data_map):
     return aligned
 
 def parse_element_name(filename):
-    """从文件名解析元素名"""
     name = filename.rsplit('.', 1)[0]
     if "电子图像" in name or "SE" in name.upper(): return "SE"
     parts = name.replace("_", " ").split(" ")
@@ -66,11 +68,9 @@ def parse_element_name(filename):
     return parts[0]
 
 def read_file_content(file_obj, filename):
-    """统一读取器"""
     res_type = None
     content = None
     fname_lower = filename.lower()
-    
     try:
         if fname_lower.endswith('.csv'):
             df = pd.read_csv(file_obj, header=None)
@@ -101,7 +101,6 @@ def read_file_content(file_obj, filename):
     return res_type, content
 
 def auto_identify_peaks(x, y):
-    """自动标峰"""
     x, y = np.array(x), np.array(y)
     if len(y) == 0: return []
     peaks, _ = find_peaks(y, height=np.max(y)*0.05, distance=15)
@@ -160,9 +159,7 @@ st.title("🔬 微粒全能分析平台")
 
 with st.sidebar:
     st.header("📂 数据导入")
-    st.info("支持：\n1. 拖入多个CSV/TXT (单微粒)\n2. 拖入ZIP包 (批量)")
-    uploaded_files = st.file_uploader("上传文件", accept_multiple_files=True)
-    
+    uploaded_files = st.file_uploader("上传文件 (支持 ZIP 批量 或 单文件)", accept_multiple_files=True)
     st.markdown("---")
     st.header("🎨 交互设置")
     zoom_level = st.slider("画布缩放", 0.5, 4.0, 1.5, 0.1)
@@ -212,10 +209,12 @@ if uploaded_files:
             bg_uint8 = (np.clip(base_rgb * 1.5, 0, 1) * 255).astype(np.uint8)
             
             with col_canvas:
+                # 强制转换为 int 类型，防止 'float' object 错误
                 cw, ch = int(w * zoom_level), int(h * zoom_level)
                 
-                # 使用 PIL Image (因头部已加补丁，这里使用 PIL 不会报错)
-                bg_pil = Image.fromarray(bg_uint8).resize((cw, ch))
+                # 【回归正统】使用 PIL Image，配合顶部的兼容性补丁
+                # 确保转换为 RGB 模式，因为 st_canvas 需要 width 属性
+                bg_pil = Image.fromarray(bg_uint8).convert("RGB").resize((cw, ch))
                 
                 st.caption(f"合成预览 ({', '.join(legend)})")
                 canvas_result = st_canvas(
