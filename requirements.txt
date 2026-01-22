@@ -6,4 +6,6 @@ matplotlib
 plotly
 opencv-python-headless
 scipy
-streamlit-drawable-canvas
+openpyxl
+xlrd
+Pillow
