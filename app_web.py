@@ -1,22 +1,4 @@
 import streamlit as st
-
-# ================= 0. 强力兼容性补丁 (必须放在最前面) =================
-# 修复 'int' object has no attribute 'width' 和 'image_to_url' missing 报错
-import streamlit.elements.image as st_image
-try:
-    # 尝试从新版 Streamlit 路径导入
-    from streamlit.elements.lib.image_utils import image_to_url
-    # 如果 st_image 模块里没有这个函数，就手动挂载上去
-    if not hasattr(st_image, 'image_to_url'):
-        st_image.image_to_url = image_to_url
-except ImportError:
-    # 如果路径变了，手动定义一个 dummy 函数防止报错 (虽然图片可能不显示，但不崩)
-    def image_to_url(image, width, clamp, channels, output_format, image_id, allow_emoji=False):
-        return "", "" 
-    if not hasattr(st_image, 'image_to_url'):
-        st_image.image_to_url = image_to_url
-# ===================================================================
-
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -26,12 +8,14 @@ import io
 import os
 import zipfile
 import shutil
+import base64
 from PIL import Image
 from scipy.signal import find_peaks
 
 # ================= 1. 全局配置 =================
 st.set_page_config(page_title="微粒全能分析平台", layout="wide", page_icon="🔬")
 
+# 元素特征能量表
 ELEMENT_ENERGIES = {
     'C': 0.277, 'N': 0.392, 'O': 0.525, 'F': 0.677, 'Na': 1.041, 'Mg': 1.253, 
     'Al': 1.486, 'Si': 1.739, 'P': 2.013, 'S': 2.307, 'Cl': 2.621, 'K': 3.312, 
@@ -39,7 +23,28 @@ ELEMENT_ENERGIES = {
     'Cu': 8.040, 'Zn': 8.630, 'Au': 2.120, 'Ag': 2.980
 }
 
-# ================= 2. 核心处理逻辑 =================
+# ================= 2. 核心工具函数 =================
+
+def get_image_base64(img_array):
+    """
+    【终极修复】将 Numpy 图像转为 Base64 字符串。
+    绕过所有 Streamlit/Canvas 的内部图片对象检查。
+    """
+    # 确保是 uint8 类型
+    if img_array.dtype != np.uint8:
+        img_array = (np.clip(img_array, 0, 1) * 255).astype(np.uint8)
+    
+    # 转为 PIL Image
+    img = Image.fromarray(img_array)
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    
+    # 保存到内存缓冲
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    
+    #以此返回 Base64 字符串
+    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
 
 def align_images(data_map):
     """强制对齐所有图像尺寸"""
@@ -209,19 +214,21 @@ if uploaded_files:
             bg_uint8 = (np.clip(base_rgb * 1.5, 0, 1) * 255).astype(np.uint8)
             
             with col_canvas:
-                # 强制转换为 int 类型，防止 'float' object 错误
                 cw, ch = int(w * zoom_level), int(h * zoom_level)
                 
-                # 【回归正统】使用 PIL Image，配合顶部的兼容性补丁
-                # 确保转换为 RGB 模式，因为 st_canvas 需要 width 属性
-                bg_pil = Image.fromarray(bg_uint8).convert("RGB").resize((cw, ch))
+                # Resize (这里需要使用 cv2, 因为 numpy array 直接resize比较方便)
+                bg_resized = cv2.resize(bg_uint8, (cw, ch), interpolation=cv2.INTER_LINEAR)
+                
+                # 【关键修复】直接传 Base64 字符串，彻底绕过 Streamlit 的图片对象检查
+                bg_b64 = get_image_base64(bg_resized)
                 
                 st.caption(f"合成预览 ({', '.join(legend)})")
+                
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 165, 0, 0.2)",
                     stroke_width=2,
                     stroke_color="#fff",
-                    background_image=bg_pil, # 使用 PIL 对象
+                    background_image=bg_b64, # 传字符串！绝对不会报 'int' error
                     update_streamlit=True,
                     height=ch,
                     width=cw,
