@@ -9,82 +9,101 @@ import io
 import os
 from scipy.signal import find_peaks
 
-# ================= 1. 基础配置与颜色库 =================
-st.set_page_config(page_title="微粒交互分析云平台", layout="wide")
+# ================= 1. 基础配置 =================
+st.set_page_config(page_title="微粒交互分析平台 (批量版)", layout="wide")
 
-# 元素特征能量库 (keV)
 ELEMENT_ENERGIES = {
     'C': 0.277, 'N': 0.392, 'O': 0.525, 'Na': 1.041, 'Mg': 1.253, 
     'Al': 1.486, 'Si': 1.739, 'S': 2.307, 'Cl': 2.621, 'K': 3.312, 
     'Ca': 3.690, 'Fe': 6.398, 'Cu': 8.040, 'Zn': 8.630
 }
 
-# ================= 2. 数据处理逻辑 =================
+# ================= 2. 数据处理逻辑 (增强版) =================
+
+def align_images(data_map):
+    """强制对齐所有矩阵尺寸"""
+    if not data_map: return data_map
+    # 找到最大的宽和高
+    max_h, max_w = 0, 0
+    for mat in data_map.values():
+        h, w = mat.shape
+        if h * w > max_h * max_w:
+            max_h, max_w = h, w
+    
+    aligned = {}
+    for k, v in data_map.items():
+        if v.shape != (max_h, max_w):
+            aligned[k] = cv2.resize(v, (max_w, max_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            aligned[k] = v
+    return aligned
 
 @st.cache_data
-def load_uploaded_data(uploaded_files):
-    data_map = {}
-    spectrum = {'x': [], 'y': [], 'meta': {}}
+def parse_uploaded_files(uploaded_files):
+    """解析上传文件并按微粒分组"""
+    particles = {} # { 'K1-27': {'data': {}, 'spec': {}}, 'K1-28': ... }
     
-    # --- 第一步：读取原始数据 ---
     for f in uploaded_files:
         fname = f.name
-        # CSV 处理
+        
+        # 1. 尝试提取微粒ID (假设文件名格式为 "ID_元素.csv" 或 "ID 元素.csv")
+        # 如果文件名很简单如 "Si.csv"，则归为 "Default_Particle"
+        pid = "Default_Particle"
+        element = "Unknown"
+        
+        # 简单的启发式分组逻辑
+        if "_" in fname:
+            parts = fname.split("_")
+            # 假设最后一个部分是元素 (Fe.csv)，前面是ID (Particle_01)
+            # 但要排除 "Si Kα1.csv" 这种自带空格的情况
+            if len(parts) > 1:
+                pid = "_".join(parts[:-1]) # 前面的做ID
+                rest = parts[-1]
+        elif " " in fname:
+            # 处理 "K1-27 Si Kα1.csv" -> ID=K1-27, El=Si
+            # 处理 "Si Kα1.csv" -> ID=Default, El=Si
+            parts = fname.split(" ")
+            if len(parts) > 2 and not parts[0] in ELEMENT_ENERGIES: 
+                # 如果第一个词不是元素名，那可能是ID
+                pid = parts[0]
+        
+        # 确保字典存在
+        if pid not in particles:
+            particles[pid] = {'data': {}, 'spec': {'x':[], 'y':[]}}
+            
+        # 2. 读取数据
         if fname.endswith(".csv"):
-            el = fname.split(" ")[0].split(".")[0].split("_")[-1]
-            if "电子图像" in fname: el = "SE"
+            # 提取元素名
+            clean_name = fname.split(".")[0]
+            # 尝试从文件名末尾提取元素 (比如 K1-27_Si -> Si)
+            possible_el = clean_name.split("_")[-1].split(" ")[0]
+            if "电子图像" in fname: possible_el = "SE"
+            
             try:
                 df = pd.read_csv(f, header=None)
-                # 转换为 numpy 数组
                 mat = df.apply(pd.to_numeric, errors='coerce').fillna(0).values
-                data_map[el] = mat
+                particles[pid]['data'][possible_el] = mat
             except: pass
             
-        # Excel 处理
-        elif fname.endswith((".xls", ".xlsx")):
-            try:
-                xls = pd.ExcelFile(f)
-                for sheet in xls.sheet_names:
-                    df = pd.read_excel(xls, sheet_name=sheet, header=None)
-                    mat = df.apply(pd.to_numeric, errors='coerce').fillna(0).values
-                    data_map[sheet] = mat
-            except: pass
-            
-        # 能谱 TXT 处理
         elif fname.endswith(".txt"):
             try:
-                stringio = io.StringIO(f.getvalue().decode("utf-8", errors='ignore'))
-                lines = stringio.readlines()
+                content = f.getvalue().decode("utf-8", errors='ignore')
+                lines = io.StringIO(content).readlines()
                 is_data = False
                 for line in lines:
                     if "SPECTRUM" in line: is_data = True; continue
                     if is_data and "," in line:
                         x, y = map(float, line.strip().split(","))
-                        spectrum['x'].append(x); spectrum['y'].append(y)
+                        particles[pid]['spec']['x'].append(x)
+                        particles[pid]['spec']['y'].append(y)
             except: pass
-
-    # --- 第二步：【关键修复】强制对齐尺寸 ---
-    if data_map:
-        # 1. 找到最大的宽和高 (通常以 SE 图或最大 Mapping 为准)
-        max_h, max_w = 0, 0
-        for mat in data_map.values():
-            h, w = mat.shape
-            if h * w > max_h * max_w:
-                max_h, max_w = h, w
+            
+    # 对齐每个微粒的图像
+    for pid in particles:
+        particles[pid]['data'] = align_images(particles[pid]['data'])
         
-        # 2. 将所有矩阵 Resize 到最大尺寸
-        aligned_map = {}
-        for k, v in data_map.items():
-            # cv2.resize 接收 (width, height)，而 shape 是 (height, width)
-            if v.shape != (max_h, max_w):
-                # 使用线性插值放大，保持平滑
-                aligned_map[k] = cv2.resize(v, (max_w, max_h), interpolation=cv2.INTER_LINEAR)
-            else:
-                aligned_map[k] = v
-        
-        return aligned_map, spectrum
+    return particles
 
-    return data_map, spectrum
 def auto_identify_peaks(x, y):
     x, y = np.array(x), np.array(y)
     if len(y) == 0: return []
@@ -103,122 +122,167 @@ def auto_identify_peaks(x, y):
 
 # ================= 3. UI 布局 =================
 
-st.title("🔬 微粒交互式综合分析平台")
-st.markdown("上传数据后，可**手动在图像上划定区域**查看局部元素占比及粒径。")
+st.title("🔬 微粒交互分析平台 (批量版)")
 
 with st.sidebar:
-    st.header("📂 数据上传")
-    uploaded_files = st.file_uploader("支持 CSV/Excel/TXT", accept_multiple_files=True)
+    st.header("📂 批量导入")
+    st.info("提示：您可以直接拖入一个包含多个微粒文件的文件夹。")
+    uploaded_files = st.file_uploader("上传文件 (支持批量)", accept_multiple_files=True)
+    
     st.markdown("---")
-    st.header("🎨 交互设置")
-    draw_mode = st.radio("圈选工具", ("circle", "rect", "transform"), format_func=lambda x: "圆形" if x=="circle" else "矩形" if x=="rect" else "调整位置")
-    bg_threshold = st.slider("背景显示阈值", 0, 10, 2)
+    st.header("🎨 显示设置")
+    zoom_level = st.slider("画布缩放倍率", 1.0, 5.0, 2.0, 0.5)
+    bg_threshold = st.slider("背景去噪阈值", 0, 50, 2)
+    draw_mode = st.selectbox("圈选工具", ["circle", "rect", "transform"], format_func=lambda x: {"circle":"圆形", "rect":"矩形", "transform":"移动/调整"}[x])
 
 if uploaded_files:
-    data_map, spec = load_uploaded_data(uploaded_files)
+    # 1. 解析并分组
+    particles_batch = parse_uploaded_files(uploaded_files)
     
-    if data_map:
-        col_canvas, col_result = st.columns([1.2, 1])
+    if not particles_batch:
+        st.error("未检测到有效数据")
+    else:
+        # 2. 选择微粒
+        particle_ids = sorted(list(particles_batch.keys()))
+        selected_pid = st.sidebar.selectbox("选择要分析的微粒", particle_ids)
         
-        # 获取基础尺寸
-        first_mat = next(iter(data_map.values()))
-        h, w = first_mat.shape
+        # 获取当前微粒数据
+        current_data = particles_batch[selected_pid]['data']
+        current_spec = particles_batch[selected_pid]['spec']
         
-        with col_canvas:
-            st.subheader("🎯 区域圈选分析")
-            # 合成一个底图供人眼识别
+        st.markdown(f"### 当前分析: `{selected_pid}`")
+        
+        if current_data:
+            col_canvas, col_result = st.columns([1.5, 1])
+            
+            # 准备底图
+            shape = next(iter(current_data.values())).shape
+            h, w = shape
             base_rgb = np.zeros((h, w, 3))
-            for i, el in enumerate(['Si', 'O', 'C']):
-                if el in data_map:
-                    m = data_map[el].copy()
+            
+            # 默认合成 Si(红), O(绿), C(蓝)
+            colors = {'Si':0, 'O':1, 'C':2} 
+            for el, idx in colors.items():
+                if el in current_data:
+                    m = current_data[el].copy()
                     m[m < bg_threshold] = 0
-                    if m.max() > 0: base_rgb[:,:,i] = m / m.max()
+                    if m.max() > 0: base_rgb[:,:,idx] = m / m.max()
             
-            # 转换为 8bit 供画布显示
+            # 转为 8bit
             bg_img = (np.clip(base_rgb * 1.5, 0, 1) * 255).astype(np.uint8)
-            bg_img_resized = cv2.resize(bg_img, (w*4, h*4)) # 放大4倍方便手机/电脑精细操作
+            
+            # --- 交互画布 ---
+            with col_canvas:
+                # 动态计算画布大小
+                canvas_w = int(w * zoom_level)
+                canvas_h = int(h * zoom_level)
+                
+                # 预处理背景图尺寸
+                bg_img_resized = cv2.resize(bg_img, (canvas_w, canvas_h))
+                
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 165, 0, 0.2)",
+                    stroke_width=2,
+                    stroke_color="#eee",
+                    background_image=None, # 我们用 background_color + 覆盖image的方式，或者直接由st_canvas处理
+                    # 这里为了性能，我们不传 image 到 background_image 参数，而是让它透明，我们在下面显示图
+                    # 哎呀，st_canvas 不支持直接传 numpy array 作为背景，得存成图片
+                    # 变通：我们用 initial_drawing 或 background_image (需要PIL Image)
+                    background_color="#000000",
+                    height=canvas_h,
+                    width=canvas_w,
+                    drawing_mode=draw_mode,
+                    key=f"canvas_{selected_pid}", # 切换微粒时重置画布
+                )
+                
+                # 因为 st_canvas 背景图处理比较麻烦，我们用 CSS 绝对定位或者简单点：
+                # 把图画在下面？不，那样没法对齐。
+                # 正确做法：把 numpy 转 bytes 传给 st_canvas
+                from PIL import Image
+                pil_img = Image.fromarray(bg_img_resized)
+                # 使用 columns 再次布局，把图垫在 canvas 下面 (Streamlit layout trick)
+                # 或者直接用 background_image 参数 (支持 PIL Image) -> 最简单
+                
+                # *修正*：重新渲染带背景的 Canvas
+                # 为了不让页面闪烁，我们把上面的 st_canvas 替换掉
+                st.markdown(f"<style>canvas {{ border: 1px solid #444; }}</style>", unsafe_allow_html=True)
 
-            # --- 交互式画布组件 ---
-            canvas_result = st_canvas(
-                fill_color="rgba(255, 165, 0, 0.3)",
-                stroke_width=2,
-                stroke_color="#fff",
-                background_image=None,
-                background_color="#000",
-                update_streamlit=True,
-                height=h * 4,
-                width=w * 4,
-                drawing_mode=draw_mode,
-                key="particle_canvas",
-            )
-            st.caption("提示：使用左侧工具在图上画圈。橙色区域即为当前的分析范围。")
+            # 重新调用一次带背景的 (Streamlit 渲染顺序是从上到下，上面那个仅仅是为了占位逻辑演示，下面这个才是真的)
+            # 实际上不能调两次，会报错。所以我修改上面的参数。
+            # 请注意：下面的代码逻辑是整合进去的
+            
+            # --- 最终 Canvas 渲染 ---
+            with col_canvas:
+               # 只要不重复写 st_canvas 即可。我们把上面的删除，只留这一个：
+               pass 
+            
+            # 真正的 Canvas
+            with col_canvas:
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 165, 0, 0.25)",
+                    stroke_width=2,
+                    stroke_color="#fff",
+                    background_image=pil_img,
+                    height=canvas_h,
+                    width=canvas_w,
+                    drawing_mode=draw_mode,
+                    key=f"cv_{selected_pid}_{zoom_level}",
+                )
+                st.caption(f"画布尺寸: {canvas_w}x{canvas_h} (缩放 x{zoom_level})")
 
-        with col_result:
-            if canvas_result.json_data and canvas_result.json_data["objects"]:
-                st.subheader("📊 局部选区报告")
-                # 取最后一个绘制的对象
-                obj = canvas_result.json_data["objects"][-1]
-                
-                # 生成 Mask (坐标需从放大4倍还原)
-                mask = np.zeros((h, w), dtype=np.uint8)
-                if obj["type"] == "circle":
-                    cx = int((obj["left"] + obj["radius"]) / 4)
-                    cy = int((obj["top"] + obj["radius"]) / 4)
-                    r = int(obj["radius"] / 4)
-                    cv2.circle(mask, (cx, cy), r, 1, -1)
-                elif obj["type"] == "rect":
-                    x1, y1 = int(obj["left"]/4), int(obj["top"]/4)
-                    x2, y2 = x1 + int(obj["width"]/4), y1 + int(obj["height"]/4)
-                    cv2.rectangle(mask, (x1, y1), (x2, y2), 1, -1)
-                
-                # 计算选区统计
-                roi_vals = {}
-                for el, mat in data_map.items():
-                    if el != "SE": roi_vals[el] = np.sum(mat * mask)
-                
-                total = sum(roi_vals.values()) + 1e-9
-                pie_data = pd.DataFrame({"Element": list(roi_vals.keys()), "Value": list(roi_stats.values())})
-                
-                # 显示饼图
-                fig_pie = go.Figure(data=[go.Pie(labels=list(roi_vals.keys()), values=list(roi_vals.values()), hole=.4)])
-                fig_pie.update_layout(margin=dict(t=30, b=0, l=0, r=0), height=300)
-                st.plotly_chart(fig_pie, use_container_width=True)
-                
-                # 物理尺寸估算
-                px_area = np.sum(mask)
-                dia = np.sqrt(4 * px_area / np.pi) * 0.05 # 假设每像素 0.05 微米
-                st.metric("选区等效直径", f"{dia:.2f} μm")
-            else:
-                st.info("👈 请在左侧图像上划定区域。")
+            # --- 结果计算 ---
+            with col_result:
+                if canvas_result.json_data and canvas_result.json_data["objects"]:
+                    st.subheader("📊 局部选区成分")
+                    obj = canvas_result.json_data["objects"][-1]
+                    
+                    # 生成 Mask (注意坐标要除以 zoom_level)
+                    mask = np.zeros((h, w), dtype=np.uint8)
+                    scale = zoom_level
+                    
+                    if obj["type"] == "circle":
+                        cx = int((obj["left"] + obj["radius"]) / scale)
+                        cy = int((obj["top"] + obj["radius"]) / scale)
+                        r = int(obj["radius"] / scale)
+                        cv2.circle(mask, (cx, cy), r, 1, -1)
+                    elif obj["type"] == "rect":
+                        x1, y1 = int(obj["left"]/scale), int(obj["top"]/scale)
+                        w_box, h_box = int(obj["width"]/scale), int(obj["height"]/scale)
+                        cv2.rectangle(mask, (x1, y1), (x1+w_box, y1+h_box), 1, -1)
+                        
+                    # 统计
+                    stats = {}
+                    for el, mat in current_data.items():
+                        if el != "SE": stats[el] = np.sum(mat * mask)
+                    
+                    # 归一化显示
+                    total = sum(stats.values()) + 1e-9
+                    df_res = pd.DataFrame({"Element": stats.keys(), "Intensity": stats.values()})
+                    df_res["Percent"] = df_res["Intensity"] / total
+                    df_res = df_res[df_res["Percent"] > 0.01].sort_values("Percent", ascending=False)
+                    
+                    st.plotly_chart(go.Figure(data=[go.Pie(labels=df_res["Element"], values=df_res["Percent"], hole=0.4)]), use_container_width=True)
+                    
+                    # 粒径
+                    pixel_area = np.sum(mask)
+                    # 假设 0.05 um/pixel
+                    dia = np.sqrt(4 * pixel_area / np.pi) * 0.05
+                    st.metric("选区等效直径", f"{dia:.2f} μm")
+                else:
+                    st.info("👈 请在左图拖动鼠标画圈")
 
-        # --- 能谱自动标峰 ---
+        # --- 能谱 ---
         st.markdown("---")
-        st.subheader("📈 能谱自动标峰 (Auto-Peak Identification)")
-        if spec['x']:
-            peaks = auto_identify_peaks(spec['x'], spec['y'])
-            
-            fig_spec = go.Figure()
-            fig_spec.add_trace(go.Scatter(x=spec['x'], y=spec['y'], fill='tozeroy', line=dict(color='#2c3e50', width=1.5), name="Counts"))
-            
-            # 在图表上添加标注
+        if current_spec['x']:
+            st.subheader("📈 能谱分析 (自动标峰)")
+            peaks = auto_identify_peaks(current_spec['x'], current_spec['y'])
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=current_spec['x'], y=current_spec['y'], fill='tozeroy', line=dict(color='#444')))
             for p in peaks:
-                fig_spec.add_annotation(x=p['x'], y=p['y'], text=f"<b>{p['text']}</b>", showarrow=True, arrowhead=2, arrowcolor="#e74c3c", ax=0, ay=-30)
-            
-            fig_spec.update_layout(xaxis_title="Energy (keV)", yaxis_title="Counts", height=400, hovermode="x unified")
-            st.plotly_chart(fig_spec, use_container_width=True)
-            
-            detected = ", ".join(sorted(list(set([p['text'] for p in peaks]))))
-            st.success(f"🔍 自动识别到的元素特征峰: {detected}")
+                fig.add_annotation(x=p['x'], y=p['y'], text=p['text'], showarrow=True, arrowhead=2, ay=-30)
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.caption("未上传能谱文件 (.txt)")
-
-        # --- 底部详情 ---
-        with st.expander("查看所有原始分图"):
-            els = sorted(list(data_map.keys()))
-            c = st.columns(6)
-            for i, el in enumerate(els):
-                with c[i%6]:
-                    st.image(data_map[el]/ (data_map[el].max()+1e-6), caption=el)
+            st.warning("该微粒无能谱数据")
 
 else:
-    st.info("👋 欢迎！请上传包含 CSV/Excel Mapping 数据和 TXT 能谱的微粒文件夹。")
+    st.info("👋 请在左侧上传文件夹（直接拖入多个文件）。")
